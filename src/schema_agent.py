@@ -47,7 +47,7 @@ from langchain_openai import ChatOpenAI
 
 # ---- 配置 ------------------------------------------------------------------
 
-SPIDER_DATA = os.path.join(os.path.dirname(__file__), "..", "spider_data", "database")
+_DEFAULT_DB_DIR = os.path.join(os.path.dirname(__file__), "..", "spider_data", "database")
 
 LOG_FORMAT = "%(asctime)s | %(levelname)-5s | %(message)s"
 LOG_DATE_FORMAT = "%H:%M:%S"
@@ -108,11 +108,11 @@ def _make_search_fields(store, model):
     return search_fields
 
 
-def _make_get_table_schema():
+def _make_get_table_schema(db_dir):
     @tool
     def get_table_schema(db_name: str, table_name: str) -> str:
         """获取某数据库中指定表的完整建表语句（DDL）"""
-        sqlite_path = os.path.join(SPIDER_DATA, db_name, f"{db_name}.sqlite")
+        sqlite_path = os.path.join(db_dir, db_name, f"{db_name}.sqlite")
         if not os.path.exists(sqlite_path):
             return f"数据库 {db_name} 不存在"
         conn = sqlite3.connect(f"file:{sqlite_path}?mode=ro", uri=True)
@@ -125,14 +125,14 @@ def _make_get_table_schema():
     return get_table_schema
 
 
-def _make_list_databases():
+def _make_list_databases(db_dir):
     @tool
     def list_databases() -> str:
         """列出当前所有可用的数据库名称"""
-        if not os.path.isdir(SPIDER_DATA):
+        if not os.path.isdir(db_dir):
             return "数据库目录不可用"
-        dbs = sorted(d for d in os.listdir(SPIDER_DATA)
-                     if os.path.isdir(os.path.join(SPIDER_DATA, d)) and not d.startswith("."))
+        dbs = sorted(d for d in os.listdir(db_dir)
+                     if os.path.isdir(os.path.join(db_dir, d)) and not d.startswith("."))
         return "\n".join(dbs)
     return list_databases
 
@@ -196,7 +196,7 @@ def _make_create_chart():
     return create_chart
 
 
-def _make_submit_sql(captured):
+def _make_submit_sql(captured, db_dir):
     """submit_sql 工具: 安全检查 + 执行 + 返回结果。
     Agent 可以多次调用此工具来查询多个数据库，累积结果后给出最终回答。"""
     @tool
@@ -214,7 +214,7 @@ def _make_submit_sql(captured):
             return f"安全检查失败: {errors}\n请修正 SQL 后重试。"
 
         # 2. 执行 SQL
-        sqlite_path = os.path.join(SPIDER_DATA, db_name, f"{db_name}.sqlite")
+        sqlite_path = os.path.join(db_dir, db_name, f"{db_name}.sqlite")
         if not os.path.exists(sqlite_path):
             return f"数据库 {db_name} 不存在"
 
@@ -266,12 +266,20 @@ class SchemaAgent:
     RESERVE_TOKENS = 2000       # 保留给 System Prompt + 工具返回 + 当前 query
     MAX_HISTORY_MSG = 40        # 硬上限兜底（防止异常情况消息数爆炸）
 
-    def __init__(self, api_key=None, model="deepseek-chat"):
+    def __init__(self, api_key=None, model="deepseek-chat", db_dir=None):
         self.api_key = api_key or os.environ.get("DEEPSEEK_API_KEY")
         if not self.api_key:
             raise RuntimeError(
                 "未设置 DeepSeek API Key。请设置环境变量 DEEPSEEK_API_KEY"
             )
+
+        self.db_dir = os.path.abspath(db_dir or _DEFAULT_DB_DIR)
+        if not os.path.isdir(self.db_dir):
+            raise RuntimeError(
+                f"数据库目录不存在: {self.db_dir}\n"
+                "请通过 db_dir 参数指定正确的路径，或确保 spider_data/database/ 目录存在。"
+            )
+        log.info("数据库目录: %s", self.db_dir)
 
         # ---- LLM ----
         self.llm = ChatOpenAI(
@@ -304,8 +312,8 @@ class SchemaAgent:
         gen_tools = [
             _make_search_databases(self.store, self.embedder.model),
             _make_search_fields(self.store, self.embedder.model),
-            _make_get_table_schema(),
-            _make_list_databases(),
+            _make_get_table_schema(self.db_dir),
+            _make_list_databases(self.db_dir),
         ]
         self._sql_generator = create_react_agent(
             model=self.llm,
@@ -585,9 +593,9 @@ class SchemaAgent:
             tools=[
                 _make_search_databases(self.store, self.embedder.model),
                 _make_search_fields(self.store, self.embedder.model),
-                _make_get_table_schema(),
-                _make_list_databases(),
-                _make_submit_sql(captured),
+                _make_get_table_schema(self.db_dir),
+                _make_list_databases(self.db_dir),
+                _make_submit_sql(captured, self.db_dir),
                 _make_create_chart(),
             ],
             prompt=self._SQL_GEN_PROMPT,
@@ -674,9 +682,9 @@ class SchemaAgent:
             tools=[
                 _make_search_databases(self.store, self.embedder.model),
                 _make_search_fields(self.store, self.embedder.model),
-                _make_get_table_schema(),
-                _make_list_databases(),
-                _make_submit_sql(captured),
+                _make_get_table_schema(self.db_dir),
+                _make_list_databases(self.db_dir),
+                _make_submit_sql(captured, self.db_dir),
                 _make_create_chart(),
             ],
             prompt=self.INSIGHT_PROMPT,
@@ -1027,12 +1035,13 @@ if __name__ == "__main__":
     parser.add_argument("-q", "--quiet", action="store_true", help="静默模式")
     parser.add_argument("-m", "--model", default="deepseek-chat", help="LLM 模型")
     parser.add_argument("-i", "--interactive", action="store_true", help="交互式多轮对话")
+    parser.add_argument("--db-dir", default=None, help="SQLite 数据库存放目录（默认: spider_data/database/）")
 
     args = parser.parse_args()
     if args.quiet:
         logging.getLogger("MultiAgent").setLevel(logging.WARNING)
 
-    agent = SchemaAgent(api_key=args.api_key, model=args.model)
+    agent = SchemaAgent(api_key=args.api_key, model=args.model, db_dir=args.db_dir)
 
     if args.interactive:
         agent.chat_loop()

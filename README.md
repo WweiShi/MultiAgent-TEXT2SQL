@@ -59,31 +59,36 @@ export DEEPSEEK_API_KEY="sk-your-key"
 ### 全量构建（首次使用）
 
 ```bash
+# 使用默认路径 spider_data/database/
 python index_builder.py --full --qdrant-force
+
+# 使用自定义数据库目录
+python index_builder.py --full --db-dir ./my_databases --qdrant-force
 ```
 
-这会扫描 `spider_data/database/` 下所有数据库，提取元数据、调用 DeepSeek 生成中文描述、向量化并存入 Qdrant。
+这会扫描指定目录下所有数据库，提取元数据、调用 DeepSeek 生成中文描述、向量化并存入 Qdrant。
 
 ### 仅构建指定数据库
 
 ```bash
-python index_builder.py --dbs sales_db hr_1 car_1 --qdrant-force
+python index_builder.py --dbs sales_db hr_1 car_1 --db-dir ./my_databases --qdrant-force
 ```
 
 ### 追加新数据库（不重建已有索引）
 
 ```bash
-python index_builder.py --dbs new_db --skip-extract    # 如果已手动提取过元数据
-python index_builder.py --input spider_data/database/new_db/new_db.sqlite
+python index_builder.py --dbs new_db --db-dir ./my_databases
+python index_builder.py --input ./my_databases/new_db/new_db.sqlite --db-dir ./my_databases
 ```
 
 ### 参数说明
 
 | 参数 | 作用 |
 |------|------|
-| `--full` | 扫描 `spider_data/database/` 下所有数据库 |
+| `--full` | 扫描 `--db-dir` 目录下所有数据库 |
 | `--dbs` | 指定数据库名列表（空格分隔） |
 | `--input` | 单个 `.sqlite` 文件路径 |
+| `--db-dir` | SQLite 数据库存放目录（默认: `spider_data/database/`） |
 | `--qdrant-force` | 强制重建 Qdrant collection（清空已有数据） |
 | `--skip-extract` | 跳过元数据提取（已有 JSON 时使用） |
 | `--skip-describe` | 跳过 LLM 描述生成（无需 API Key，但降低准确率） |
@@ -99,11 +104,14 @@ python index_builder.py --input spider_data/database/new_db/new_db.sqlite
 索引完成后，启动交互式对话：
 
 ```bash
-# 交互模式
+# 交互模式（默认数据库路径）
 python src/schema_agent.py -i
 
+# 使用自定义数据库目录
+python src/schema_agent.py -i --db-dir ./my_databases
+
 # 单次查询
-python src/schema_agent.py "统计 sales_db 中各地区的销售额"
+python src/schema_agent.py "统计 sales_db 中各地区的销售额" --db-dir ./my_databases
 ```
 
 ### 启动参数
@@ -113,6 +121,7 @@ python src/schema_agent.py "统计 sales_db 中各地区的销售额"
 | `-i, --interactive` | 交互式多轮对话模式 |
 | `-k, --api-key` | DeepSeek API Key（也可设环境变量） |
 | `-m, --model` | LLM 模型名（默认 `deepseek-chat`） |
+| `--db-dir` | SQLite 数据库目录（默认 `spider_data/database/`） |
 | `-v, --verbose` | 详细日志，输出每个 Agent 步骤 |
 | `-q, --quiet` | 静默模式，只显示最终答案 |
 
@@ -195,22 +204,23 @@ Agent: 已生成图表，保存至 output/charts/bar_20260609_143022.png
 
 ### 第一步：放置数据库文件
 
-数据库需遵循目录约定：`spider_data/database/<数据库名>/<数据库名>.sqlite`
+数据库需遵循目录约定：`<你的数据库目录>/<数据库名>/<数据库名>.sqlite`
 
-例如：
+例如你的数据库目录是 `./my_databases`：
 
 ```
-spider_data/
-└── database/
-    └── sales_db/
-        └── sales_db.sqlite
+my_databases/
+└── sales_db/
+    └── sales_db.sqlite
 ```
+
+> 目录位置和名称由你自己决定，通过 `--db-dir` 参数传入即可。
 
 ### 第二步：提取元数据
 
 ```bash
-python src/schema_manager.py extract spider_data/database/sales_db/sales_db.sqlite -o metadata
-python src/schema_manager.py extract spider_data/database -o metadata   # 批量
+python src/schema_manager.py extract ./my_databases/sales_db/sales_db.sqlite -o metadata
+python src/schema_manager.py extract ./my_databases -o metadata   # 批量
 ```
 
 读取内容：列名/类型/可空、主外键关系、采样值、去重数/空值数/行数、数值列的 min/max/avg。输出到 `metadata/<数据库名>.json`。
@@ -318,14 +328,17 @@ docker start qdrant
 
 ```bash
 # 1. 放好文件
-mkdir -p spider_data/database/new_db
-cp your_db.sqlite spider_data/database/new_db/new_db.sqlite
+mkdir -p ./my_databases/new_db
+cp your_db.sqlite ./my_databases/new_db/new_db.sqlite
 
 # 2. 一键构建索引
-python index_builder.py --input spider_data/database/new_db/new_db.sqlite
+python index_builder.py --input ./my_databases/new_db/new_db.sqlite --db-dir ./my_databases
 ```
 
-然后重启 Agent 即可。
+启动 Agent 时指定相同的 `--db-dir`：
+```bash
+python src/schema_agent.py -i --db-dir ./my_databases
+```
 
 ### Q: 如何替换 LLM 为其他模型
 

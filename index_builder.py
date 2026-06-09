@@ -3,13 +3,13 @@
 
 用法:
     # 全量构建（索引所有数据库）
-    python index_builder.py --full
+    python index_builder.py --full --db-dir ./my_databases
 
     # 构建指定数据库，跳过描述生成
-    python index_builder.py --dbs sales_db hr_1 car_1 --skip-describe
+    python index_builder.py --dbs sales_db hr_1 car_1 --db-dir ./my_databases --skip-describe
 
     # 单数据库首次导入
-    python index_builder.py --input spider_data/database/new_db/new_db.sqlite
+    python index_builder.py --input ./my_databases/sales_db/sales_db.sqlite --db-dir ./my_databases
 
     # 查看参数
     python index_builder.py --help
@@ -28,7 +28,7 @@ from src.schema_manager import SchemaManager
 from src.field_embedder import FieldEmbedder
 from src.qdrant_store import QdrantStore
 
-SPIDER_DIR = os.path.join(_project_root, "spider_data", "database")
+DEFAULT_DB_DIR = os.path.join(_project_root, "spider_data", "database")
 METADATA_DIR = os.path.join(_project_root, "metadata")
 COLLECTION_NAME = "schema_fields"
 
@@ -39,11 +39,11 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python index_builder.py --full                               # 全量构建
-  python index_builder.py --dbs sales_db hr_1 car_1            # 指定数据库
-  python index_builder.py --input my_db.sqlite                 # 导入单个数据库文件
-  python index_builder.py --dbs sales_db --skip-describe       # 跳过 LLM 描述
-  python index_builder.py --full --skip-extract --skip-describe # 仅重建向量索引
+  python index_builder.py --full --db-dir ./my_databases                # 全量构建
+  python index_builder.py --dbs sales_db hr_1 car_1 --db-dir ./my_databases  # 指定数据库
+  python index_builder.py --input ./my_databases/sales_db/sales_db.sqlite --db-dir ./my_databases
+  python index_builder.py --dbs sales_db --skip-describe --db-dir ./my_databases
+  python index_builder.py --full --skip-extract --skip-describe --db-dir ./my_databases
         """,
     )
 
@@ -51,7 +51,7 @@ def main():
     src_group = parser.add_mutually_exclusive_group()
     src_group.add_argument(
         "--full", action="store_true",
-        help="扫描 spider_data/database/ 下所有 .sqlite 文件并构建索引",
+        help="扫描 --db-dir 目录下所有数据库并构建索引",
     )
     src_group.add_argument(
         "--dbs", nargs="+", default=None,
@@ -60,6 +60,10 @@ def main():
     src_group.add_argument(
         "--input", default=None,
         help="单个 .sqlite 文件路径，自动提取文件名作为数据库名",
+    )
+    parser.add_argument(
+        "--db-dir", default=None,
+        help="SQLite 数据库存放目录（默认: spider_data/database/）",
     )
 
     # 步骤控制
@@ -102,14 +106,22 @@ def main():
 
     args = parser.parse_args()
 
+    db_dir = args.db_dir or DEFAULT_DB_DIR
+    db_dir = os.path.abspath(db_dir)
+    if not os.path.isdir(db_dir):
+        print(f"错误: 数据库目录不存在: {db_dir}")
+        print("请通过 --db-dir 指定正确的 SQLite 数据库存放目录。")
+        sys.exit(1)
+    print(f"数据库目录: {db_dir}")
+
     # ---- 步骤 0: 确定数据库列表 ----
 
-    db_names = _resolve_databases(args)
+    db_names = _resolve_databases(args, db_dir)
     if not db_names:
         print("错误: 未找到需要处理的数据库。请指定 --full、--dbs 或 --input。")
         sys.exit(1)
 
-    print(f"\n目标数据库 ({len(db_names)} 个): {', '.join(db_names)}")
+    print(f"目标数据库 ({len(db_names)} 个): {', '.join(db_names)}")
 
     # ---- 检查 Qdrant ----
 
@@ -131,7 +143,7 @@ def main():
         print("\n=== 步骤 1/3: 提取元数据 ===")
         mgr = SchemaManager(output_dir=METADATA_DIR)
         for db_name in db_names:
-            sqlite_path = os.path.join(SPIDER_DIR, db_name, f"{db_name}.sqlite")
+            sqlite_path = os.path.join(db_dir, db_name, f"{db_name}.sqlite")
             if not os.path.exists(sqlite_path):
                 print(f"  [{db_name}] 文件不存在: {sqlite_path}，跳过")
                 continue
@@ -185,19 +197,26 @@ def main():
     print(f"{'='*55}")
 
 
-def _resolve_databases(args):
+def _resolve_databases(args, db_dir):
     if args.input:
-        db_name = os.path.splitext(os.path.basename(args.input))[0]
+        # 如果 --input 指定了完整路径，从其父目录推导 db 名
+        sqlite_path = os.path.abspath(args.input)
+        db_name = os.path.splitext(os.path.basename(sqlite_path))[0]
+        # 让后续步骤能正确找到文件：确保 --input 的文件在 db_dir/<db_name>/ 下
+        expected_dir = os.path.join(db_dir, db_name)
+        expected_path = os.path.join(expected_dir, f"{db_name}.sqlite")
+        if not os.path.exists(expected_path):
+            os.makedirs(expected_dir, exist_ok=True)
+            if os.path.abspath(sqlite_path) != os.path.abspath(expected_path):
+                import shutil
+                shutil.copy2(sqlite_path, expected_path)
+                print(f"  已复制: {sqlite_path} → {expected_path}")
         return [db_name]
 
     if args.dbs:
         return list(args.dbs)
 
     if args.full:
-        db_dir = SPIDER_DIR
-        if not os.path.isdir(db_dir):
-            print(f"错误: 数据库目录不存在: {db_dir}")
-            return []
         return sorted([
             d for d in os.listdir(db_dir)
             if os.path.isdir(os.path.join(db_dir, d))
