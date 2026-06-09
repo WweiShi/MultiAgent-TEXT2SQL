@@ -19,6 +19,11 @@ output/
 # Claude
 .claude/
 
+# Test artifacts
+*_report.json
+test_insight.py
+ab_test_report.json
+
 # OS
 .DS_Store
 Thumbs.db
