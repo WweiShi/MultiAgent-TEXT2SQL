@@ -12,6 +12,8 @@ __pycache__/
 spider_data/
 metadata/
 output/
+!output/charts/
+!output/charts/*.png
 
 # Env
 .env

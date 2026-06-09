@@ -191,8 +191,10 @@ Summer Music Fest   | 2
 
 ```
 你: 查询各部门平均薪资并画柱状图
-Agent: 已生成图表，保存至 output/charts/bar_20260609_143022.png
+Agent: 已生成图表，保存至 output/charts/bar_7c58232a_20260605_152041.png
 ```
+
+![柱状图示例](output/charts/bar_7c58232a_20260605_152041.png)
 
 支持的图表类型：`饼图`/`pie`、`柱状图`/`bar`、`折线图`/`line`
 
