@@ -5,11 +5,10 @@
 ## 目录
 
 - [环境准备](#环境准备)
-- [导入新数据库](#导入新数据库)
-- [生成字段描述](#生成字段描述)
-- [构建向量索引](#构建向量索引)
+- [一键构建索引](#一键构建索引)
 - [启动对话查询](#启动对话查询)
 - [对话交互指南](#对话交互指南)
+- [分步操作参考](#分步操作参考)
 - [项目架构](#项目架构)
 - [常见问题](#常见问题)
 
@@ -53,138 +52,45 @@ export DEEPSEEK_API_KEY="sk-your-key"
 
 ---
 
-## 导入新数据库
+## 一键构建索引
 
-本项目基于 Spider 数据集（166 个 SQLite 数据库），你也可以导入自己的 SQLite 数据库。整个流程分为 **提取元数据 → 生成描述 → 构建索引 → 对话查询** 四步。
+完成环境准备后，使用 [index_builder.py](index_builder.py) 一条命令完成**元数据提取 → 描述生成 → 向量化 → 上传 Qdrant** 全流程。
 
-### 第一步：放置数据库文件
-
-数据库需要遵循以下目录约定：
-
-```
-spider_data/database/<数据库名>/<数据库名>.sqlite
-```
-
-例如导入一个名为 `sales_db` 的数据库：
-
-```
-spider_data/
-└── database/
-    └── sales_db/
-        └── sales_db.sqlite
-```
-
-> 系统会根据目录名识别数据库名称，`list_databases` 工具会列出所有 `spider_data/database/` 下的子目录。
-
-### 第二步：提取元数据
+### 全量构建（首次使用）
 
 ```bash
-# 提取单个数据库
-python src/schema_manager.py extract spider_data/database/sales_db/sales_db.sqlite -o metadata
-
-# 或批量提取整个文件夹中所有 .sqlite 文件
-python src/schema_manager.py extract spider_data/database -o metadata
+python index_builder.py --full --qdrant-force
 ```
 
-这一步会读取 SQLite 的表结构并生成元数据 JSON，包含：
+这会扫描 `spider_data/database/` 下所有数据库，提取元数据、调用 DeepSeek 生成中文描述、向量化并存入 Qdrant。
 
-| 提取内容 | 说明 |
-|----------|------|
-| 列名、类型、是否可空 | 来自 `PRAGMA table_info` |
-| 主键、外键关系 | 来自 `PRAGMA foreign_key_list`、`PRAGMA index_list` |
-| 采样值 | 每列 5 个去重非空值 |
-| 统计信息 | 去重数、空值数、总行数、数值列的最大/最小/平均值 |
-
-输出文件为 `metadata/<数据库名>.json`。
-
----
-
-## 生成字段描述
-
-元数据提取后，字段只有技术信息（名称、类型、外键等），缺少业务语义。通过 DeepSeek API 为每个字段生成中文描述：
+### 仅构建指定数据库
 
 ```bash
-# 为单个数据库生成描述
-python src/schema_manager.py describe metadata/sales_db.json
-
-# 或批量为整个 metadata 文件夹生成描述
-python src/schema_manager.py describe metadata/
-
-# 指定 API Key 和模型
-python src/schema_manager.py describe metadata/sales_db.json -k "sk-your-key" -m "deepseek-chat"
-```
-
-描述生成后，JSON 文件中每个字段会新增 `description` 字段，例如：
-
-```json
-{
-  "name": "salary",
-  "type": "REAL",
-  "description": "员工月薪，单位为元",
-  "sample_values": [8500.0, 12000.0, 6500.0]
-}
-```
-
-> **注意**：描述生成需要调用 DeepSeek API，会产生少量费用。如果跳过此步，向量检索仍可工作，但会缺失业务语义信息，可能影响查询准确率。
-
----
-
-## 构建向量索引
-
-将描述好的元数据转换为向量并存入 Qdrant，使自然语言查询能够语义匹配到正确的表和字段。
-
-### 首次索引（全量构建）
-
-```bash
-# 索引 metadata 文件夹中的所有数据库（首次使用需加 --qdrant-force 创建 collection）
-python src/field_embedder.py metadata/ --qdrant-upload --qdrant-force
-```
-
-### 索引指定的数据库
-
-```bash
-# 只索引部分数据库
-python src/field_embedder.py metadata/ --db-list sales_db hr_1 car_1 --qdrant-upload --qdrant-force
+python index_builder.py --dbs sales_db hr_1 car_1 --qdrant-force
 ```
 
 ### 追加新数据库（不重建已有索引）
 
-新增数据库后，**去掉** `--qdrant-force`，向量会追加到已有 collection 中：
-
 ```bash
-python src/field_embedder.py metadata/new_db.json --qdrant-upload
+python index_builder.py --dbs new_db --skip-extract    # 如果已手动提取过元数据
+python index_builder.py --input spider_data/database/new_db/new_db.sqlite
 ```
 
-### 不上传，仅查看或保存向量
-
-```bash
-# 仅向量化并在终端预览
-python src/field_embedder.py metadata/sales_db.json
-
-# 向量化并保存到 JSON 文件
-python src/field_embedder.py metadata/ --save vectors.json
-```
-
-### 验证索引
-
-```bash
-# 查看已索引的字段数量
-python src/qdrant_store.py info schema_fields
-
-# 测试检索
-python src/schema_retriever.py "员工薪资" --db sales_db
-```
-
-### 索引参数说明
+### 参数说明
 
 | 参数 | 作用 |
 |------|------|
-| `--qdrant-upload` | 向量化后上传到 Qdrant |
-| `--qdrant-force` | 强制重建 collection（清空已有数据） |
-| `--qdrant-collection` | Collection 名称（默认 `schema_fields`） |
-| `--qdrant-host` | Qdrant 地址（默认 `localhost`） |
-| `--qdrant-port` | Qdrant 端口（默认 `6333`） |
-| `--db-list` | 仅处理指定的数据库（空格分隔多个库名） |
+| `--full` | 扫描 `spider_data/database/` 下所有数据库 |
+| `--dbs` | 指定数据库名列表（空格分隔） |
+| `--input` | 单个 `.sqlite` 文件路径 |
+| `--qdrant-force` | 强制重建 Qdrant collection（清空已有数据） |
+| `--skip-extract` | 跳过元数据提取（已有 JSON 时使用） |
+| `--skip-describe` | 跳过 LLM 描述生成（无需 API Key，但降低准确率） |
+| `-k, --api-key` | DeepSeek API Key（也可设 `DEEPSEEK_API_KEY` 环境变量） |
+| `-m, --model` | LLM 模型名（默认 `deepseek-chat`） |
+
+> **注意**：如果不设 API Key 且不加 `--skip-describe`，脚本会自动跳过描述生成步骤。
 
 ---
 
@@ -283,6 +189,63 @@ Agent: 已生成图表，保存至 output/charts/bar_20260609_143022.png
 
 ---
 
+## 分步操作参考
+
+以下为各个步骤的独立执行方式，适合需要精细控制或排查问题的场景。
+
+### 第一步：放置数据库文件
+
+数据库需遵循目录约定：`spider_data/database/<数据库名>/<数据库名>.sqlite`
+
+例如：
+
+```
+spider_data/
+└── database/
+    └── sales_db/
+        └── sales_db.sqlite
+```
+
+### 第二步：提取元数据
+
+```bash
+python src/schema_manager.py extract spider_data/database/sales_db/sales_db.sqlite -o metadata
+python src/schema_manager.py extract spider_data/database -o metadata   # 批量
+```
+
+读取内容：列名/类型/可空、主外键关系、采样值、去重数/空值数/行数、数值列的 min/max/avg。输出到 `metadata/<数据库名>.json`。
+
+### 第三步：生成字段描述
+
+```bash
+python src/schema_manager.py describe metadata/sales_db.json
+python src/schema_manager.py describe metadata/                        # 批量
+```
+
+通过 DeepSeek API 为每个字段生成中文业务描述。需要设置 `DEEPSEEK_API_KEY`。
+
+### 第四步：构建向量索引
+
+```bash
+# 全量构建
+python src/field_embedder.py metadata/ --qdrant-upload --qdrant-force
+
+# 指定数据库
+python src/field_embedder.py metadata/ --db-list sales_db hr_1 --qdrant-upload --qdrant-force
+
+# 追加数据库（不重建已有索引）
+python src/field_embedder.py metadata/new_db.json --qdrant-upload
+```
+
+### 验证索引
+
+```bash
+python src/qdrant_store.py info schema_fields
+python src/schema_retriever.py "员工薪资" --db sales_db
+```
+
+---
+
 ## 项目架构
 
 ```
@@ -296,6 +259,7 @@ Rewrite → Router ──chat───→ Chat
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
+| 一键构建 | [index_builder.py](index_builder.py) | 一条命令完成元数据提取 → 描述 → 向量化 → 上传全流程 |
 | 元数据提取 | [src/schema_manager.py](src/schema_manager.py) | 从 SQLite 提取字段级元数据，调用 DeepSeek 生成中文描述 |
 | 向量化 | [src/field_embedder.py](src/field_embedder.py) | 将字段元数据转换为语义嵌入向量 |
 | 向量存储 | [src/qdrant_store.py](src/qdrant_store.py) | Qdrant 向量数据库 CRUD 与检索 |
@@ -357,12 +321,8 @@ docker start qdrant
 mkdir -p spider_data/database/new_db
 cp your_db.sqlite spider_data/database/new_db/new_db.sqlite
 
-# 2. 提取 + 描述
-python src/schema_manager.py extract spider_data/database/new_db/new_db.sqlite -o metadata
-python src/schema_manager.py describe metadata/new_db.json
-
-# 3. 追加索引（不加 --qdrant-force，避免重建已有数据）
-python src/field_embedder.py metadata/new_db.json --qdrant-upload
+# 2. 一键构建索引
+python index_builder.py --input spider_data/database/new_db/new_db.sqlite
 ```
 
 然后重启 Agent 即可。
