@@ -178,7 +178,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="将 metadata JSON 中的字段转换为向量 embedding"
+        description="将 metadata JSON 中的字段转换为向量 embedding，并可上传至 Qdrant"
     )
     parser.add_argument(
         "input",
@@ -195,6 +195,26 @@ if __name__ == "__main__":
     parser.add_argument(
         "--save", default=None,
         help="将向量序列化保存到指定 JSON 文件中",
+    )
+    parser.add_argument(
+        "--qdrant-upload", action="store_true",
+        help="向量化后直接上传到 Qdrant",
+    )
+    parser.add_argument(
+        "--qdrant-collection", default="schema_fields",
+        help="Qdrant collection 名称 (默认: schema_fields)",
+    )
+    parser.add_argument(
+        "--qdrant-force", action="store_true",
+        help="强制重建 Qdrant collection（已有数据将被清除）",
+    )
+    parser.add_argument(
+        "--qdrant-host", default="localhost",
+        help="Qdrant 地址 (默认: localhost)",
+    )
+    parser.add_argument(
+        "--qdrant-port", type=int, default=6333,
+        help="Qdrant 端口 (默认: 6333)",
     )
 
     args = parser.parse_args()
@@ -232,3 +252,13 @@ if __name__ == "__main__":
         with open(args.save, "w", encoding="utf-8") as f:
             json.dump(serializable, f, ensure_ascii=False, indent=2)
         print(f"向量已保存到: {args.save}")
+
+    if args.qdrant_upload:
+        from src.qdrant_store import QdrantStore
+        store = QdrantStore(host=args.qdrant_host, port=args.qdrant_port)
+        store.create_collection(
+            args.qdrant_collection,
+            vector_size=embedder.vector_size,
+            force=args.qdrant_force,
+        )
+        store.upsert_batch(items, collection_name=args.qdrant_collection)

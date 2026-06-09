@@ -133,62 +133,37 @@ python src/schema_manager.py describe metadata/sales_db.json -k "sk-your-key" -m
 
 将描述好的元数据转换为向量并存入 Qdrant，使自然语言查询能够语义匹配到正确的表和字段。
 
-### 方式一：通过 Python 脚本（推荐）
+### 首次索引（全量构建）
 
 ```bash
-python -c "
-from src.field_embedder import FieldEmbedder
-from src.qdrant_store import QdrantStore
-
-embedder = FieldEmbedder()
-store = QdrantStore()
-
-# 将指定数据库的元数据向量化并存入 Qdrant
-items = embedder.embed_selected_databases('metadata', ['sales_db', 'hr_1', 'car_1'])
-store.create_collection('schema_fields', vector_size=512, force=True)
-store.upsert_batch(items, collection_name='schema_fields')
-print(f'已索引 {len(items)} 个字段')
-"
+# 索引 metadata 文件夹中的所有数据库（首次使用需加 --qdrant-force 创建 collection）
+python src/field_embedder.py metadata/ --qdrant-upload --qdrant-force
 ```
 
-### 方式二：一步步操作
+### 索引指定的数据库
 
 ```bash
-# 1. 向量化单个数据库的元数据
-python src/field_embedder.py metadata/sales_db.json --save sales_vectors.json
-
-# 2. 创建 Qdrant collection（仅首次）
-python src/qdrant_store.py create schema_fields --dim 512 --force
-
-# 3. 通过代码写入 Qdrant
-python -c "
-from src.field_embedder import FieldEmbedder
-from src.qdrant_store import QdrantStore
-e = FieldEmbedder()
-s = QdrantStore()
-items = e.embed_metadata_json('metadata/sales_db.json')
-s.upsert_batch(items)
-"
+# 只索引部分数据库
+python src/field_embedder.py metadata/ --db-list sales_db hr_1 car_1 --qdrant-upload --qdrant-force
 ```
 
-### 索引多个数据库
+### 追加新数据库（不重建已有索引）
+
+新增数据库后，**去掉** `--qdrant-force`，向量会追加到已有 collection 中：
 
 ```bash
-python -c "
-from src.field_embedder import FieldEmbedder
-from src.qdrant_store import QdrantStore
-e = FieldEmbedder()
-s = QdrantStore()
-# 列出你要索引的数据库名
-db_list = ['sales_db', 'hr_1', 'concert_singer', 'car_1', 'world_1']
-items = e.embed_selected_databases('metadata', db_list)
-s.create_collection('schema_fields', vector_size=512, force=True)
-s.upsert_batch(items)
-print(f'已索引 {len(items)} 个字段，来自 {len(db_list)} 个数据库')
-"
+python src/field_embedder.py metadata/new_db.json --qdrant-upload
 ```
 
-> 每次新增数据库后，不需要重建整个索引——可以将新库的向量追加到已有 collection 中（使用 `force=False`）。
+### 不上传，仅查看或保存向量
+
+```bash
+# 仅向量化并在终端预览
+python src/field_embedder.py metadata/sales_db.json
+
+# 向量化并保存到 JSON 文件
+python src/field_embedder.py metadata/ --save vectors.json
+```
 
 ### 验证索引
 
@@ -199,6 +174,17 @@ python src/qdrant_store.py info schema_fields
 # 测试检索
 python src/schema_retriever.py "员工薪资" --db sales_db
 ```
+
+### 索引参数说明
+
+| 参数 | 作用 |
+|------|------|
+| `--qdrant-upload` | 向量化后上传到 Qdrant |
+| `--qdrant-force` | 强制重建 collection（清空已有数据） |
+| `--qdrant-collection` | Collection 名称（默认 `schema_fields`） |
+| `--qdrant-host` | Qdrant 地址（默认 `localhost`） |
+| `--qdrant-port` | Qdrant 端口（默认 `6333`） |
+| `--db-list` | 仅处理指定的数据库（空格分隔多个库名） |
 
 ---
 
@@ -375,16 +361,8 @@ cp your_db.sqlite spider_data/database/new_db/new_db.sqlite
 python src/schema_manager.py extract spider_data/database/new_db/new_db.sqlite -o metadata
 python src/schema_manager.py describe metadata/new_db.json
 
-# 3. 追加索引（不重建已有索引）
-python -c "
-from src.field_embedder import FieldEmbedder
-from src.qdrant_store import QdrantStore
-e = FieldEmbedder()
-s = QdrantStore()
-items = e.embed_metadata_json('metadata/new_db.json')
-s.upsert_batch(items, collection_name='schema_fields')
-print(f'已添加 {len(items)} 个字段')
-"
+# 3. 追加索引（不加 --qdrant-force，避免重建已有数据）
+python src/field_embedder.py metadata/new_db.json --qdrant-upload
 ```
 
 然后重启 Agent 即可。
